@@ -1,9 +1,10 @@
 // lib/main.dart
 import 'package:flutter/material.dart';
 import 'models.dart';
-import 'SubstitutionDialog.dart';
+import 'Substitutiondialog.dart';
 import 'EditPlayersDialog.dart';
-import 'MatchSummaryScreen.dart'; // Import the new match summary screen
+import 'MatchSummaryScreen.dart';
+import 'commentary_screen.dart'; // Import the Commentary Screen
 
 void main() {
   runApp(BasketballApp());
@@ -54,39 +55,34 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
   int selectedTeam = 1;
   TeamColor team1Color = TeamColor.red;
   TeamColor team2Color = TeamColor.blue;
-  String team1Name = 'Team 1'; // This name can be changed by user
-  String team2Name = 'Team 2'; // This name can be changed by user
+  String team1Name = 'Team 1';
+  String team2Name = 'Team 2';
   int currentQuarter = 0; // 0-indexed: 0=Q1, 1=Q2, 2=Q3, 3=Q4
 
-  // Quarter-by-quarter total points for each team IN THAT QUARTER.
-  // Keys: 1, 2, 3, 4 for Q1, Q2, Q3, Q4.
-  // Inner Map Keys: Will be the actual team names (e.g., 'Lakers', 'Bulls')
   Map<int, Map<String, int>> quarterScores = {
-    1: {}, // Initialize empty, will populate dynamically
+    1: {},
     2: {},
     3: {},
     4: {},
   };
 
-  // This map tracks points scored *within the currently active quarter only*.
-  // It uses dynamic team names as keys.
   Map<String, int> _currentQuarterPoints = {};
+
+  List<GameEvent> gameCommentary = [];
 
 
   @override
   void initState() {
     super.initState();
-    // Initialize _currentQuarterPoints with current team names at start
     _currentQuarterPoints = {
       team1Name: 0,
       team2Name: 0,
     };
-    // Also initialize the first quarter's entry in quarterScores with initial team names
-    // This is important for the case where points are scored in Q1 and then directly to summary/end match
     quarterScores[1] = {
       team1Name: 0,
       team2Name: 0,
     };
+    gameCommentary.add(GameEvent.gameStart());
   }
 
 
@@ -122,22 +118,84 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
   void _addPoints(Player player, int points) {
     setState(() {
       player.points += points;
+      player.actionHistory.add(points);
 
-      // Add points to the _currentQuarterPoints for the active quarter
-      // Ensure the keys match the team names used elsewhere
-      if (player.teamId == 1) {
-        _currentQuarterPoints[team1Name] = (_currentQuarterPoints[team1Name] ?? 0) + points;
-      } else {
-        _currentQuarterPoints[team2Name] = (_currentQuarterPoints[team2Name] ?? 0) + points;
-      }
+      final String currentTeamName = (player.teamId == 1) ? team1Name : team2Name;
+      _currentQuarterPoints[currentTeamName] = (_currentQuarterPoints[currentTeamName] ?? 0) + points;
+
+      gameCommentary.add(GameEvent.point(
+        playerName: player.name,
+        teamName: currentTeamName,
+        value: points,
+      ));
     });
   }
 
   void _addFoul(Player player) {
     setState(() {
       player.fouls += 1;
+      player.actionHistory.add(-1);
+
+      final String currentTeamName = (player.teamId == 1) ? team1Name : team2Name;
+      gameCommentary.add(GameEvent.foul(
+        playerName: player.name,
+        teamName: currentTeamName,
+      ));
     });
   }
+
+  void _undoLastAction(Player player) {
+    setState(() {
+      if (player.actionHistory.isNotEmpty) {
+        int lastAction = player.actionHistory.removeLast();
+
+        if (lastAction > 0) { // It was points
+          player.points -= lastAction;
+          final String currentTeamName = (player.teamId == 1) ? team1Name : team2Name;
+          _currentQuarterPoints[currentTeamName] = (_currentQuarterPoints[currentTeamName] ?? 0) - lastAction;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Undid ${lastAction}pt for ${player.name}'),
+              duration: Duration(milliseconds: 800),
+            ),
+          );
+          // For simplicity, remove the last matching point event.
+          // A more robust undo would use event IDs or a deeper undo stack.
+          int eventIndexToRemove = gameCommentary.lastIndexWhere((event) =>
+          event.type == EventType.point &&
+              event.playerName == player.name &&
+              event.value == lastAction);
+          if (eventIndexToRemove != -1) {
+            gameCommentary.removeAt(eventIndexToRemove);
+          }
+
+        } else if (lastAction == -1) { // It was a foul
+          player.fouls = (player.fouls - 1).clamp(0, player.fouls);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Undid foul for ${player.name}'),
+              duration: Duration(milliseconds: 800),
+            ),
+          );
+          // For simplicity, remove the last matching foul event.
+          int eventIndexToRemove = gameCommentary.lastIndexWhere((event) =>
+          event.type == EventType.foul &&
+              event.playerName == player.name);
+          if (eventIndexToRemove != -1) {
+            gameCommentary.removeAt(eventIndexToRemove);
+          }
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${player.name} has no actions to undo.'),
+            duration: Duration(milliseconds: 800),
+          ),
+        );
+      }
+    });
+  }
+
 
   void _editTeamName(int teamId) {
     String currentName = teamId == 1 ? team1Name : team2Name;
@@ -166,25 +224,58 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
                 String oldName = (teamId == 1) ? team1Name : team2Name;
                 String newName = controller.text.trim().isEmpty ? 'Team $teamId' : controller.text.trim();
 
-                // If team name changed, update quarterScores keys for past quarters
-                // This is a bit complex. For simplicity, we'll just re-map current quarter points here.
-                // A more robust solution might involve iterating through quarterScores
-                // and updating keys, but it adds complexity. Let's focus on the primary issue.
-
+                // If team name changed, update the primary team names
                 if (teamId == 1) {
                   team1Name = newName;
                 } else {
                   team2Name = newName;
                 }
-                // Re-initialize _currentQuarterPoints with new names if they changed
-                _currentQuarterPoints = {
-                  team1Name: _currentQuarterPoints[oldName] ?? 0, // Carry over points if name changed
-                  team2Name: _currentQuarterPoints[team2Name] ?? 0,
-                };
-                // You might need to consider updating historical quarterScores keys too,
-                // but that adds significant complexity to this simple example.
-                // For now, let's assume team names are set at the start and don't change mid-game if full quarter history is critical.
-                // If they *can* change, a deeper data structure for quarterScores might be needed.
+
+                // Update _currentQuarterPoints keys
+                Map<String, int> tempCurrentQuarterPoints = {};
+                if (_currentQuarterPoints.containsKey(oldName)) {
+                  tempCurrentQuarterPoints[newName] = _currentQuarterPoints[oldName]!;
+                } else {
+                  tempCurrentQuarterPoints[newName] = 0;
+                }
+                // Ensure the other team's name is also carried over/initialized
+                if (teamId == 1) { // If team 1 changed, ensure team 2 is copied
+                  tempCurrentQuarterPoints[team2Name] = _currentQuarterPoints[team2Name] ?? 0;
+                } else { // If team 2 changed, ensure team 1 is copied
+                  tempCurrentQuarterPoints[team1Name] = _currentQuarterPoints[team1Name] ?? 0;
+                }
+                _currentQuarterPoints = tempCurrentQuarterPoints;
+
+
+                // Also update keys in historical quarterScores
+                quarterScores.forEach((quarterNum, scoresMap) {
+                  Map<String, int> tempScoresMap = {};
+                  if (scoresMap.containsKey(oldName)) {
+                    tempScoresMap[newName] = scoresMap[oldName]!;
+                  } else {
+                    tempScoresMap[newName] = 0;
+                  }
+                  // Ensure the other team's score is also copied
+                  if (teamId == 1) {
+                    tempScoresMap[team2Name] = scoresMap[team2Name] ?? 0;
+                  } else {
+                    tempScoresMap[team1Name] = scoresMap[team1Name] ?? 0;
+                  }
+                  quarterScores[quarterNum] = tempScoresMap;
+                });
+
+                // Update team names in all existing game commentary events
+                for (var event in gameCommentary) {
+                  if (event.teamName == oldName) {
+                    // Note: This relies on GameEvent having mutable properties or a copyWith
+                    // Since it's final, we'd ideally recreate the event.
+                    // For simplicity in this example, and assuming commentary is a log,
+                    // we'll leave past events as is or need to redesign GameEvent.
+                    // If strict historical team names in commentary are required,
+                    // GameEvent would need to store original team names OR you'd deep copy the list and modify.
+                  }
+                }
+
               });
               Navigator.of(context).pop();
             },
@@ -286,22 +377,28 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
 
   void _showSubstitutionDialog() {
     List<Player> currentPlayers = selectedTeam == 1 ? team1Players : team2Players;
+    String teamNameForSub = selectedTeam == 1 ? team1Name : team2Name; // Use the actual team name
     Color teamColor = selectedTeam == 1 ? getTeamColor(team1Color) : getTeamColor(team2Color);
-    String teamName = selectedTeam == 1 ? '$team1Name (${getTeamColorName(team1Color)})' : '$team2Name (${getTeamColorName(team2Color)})';
+
 
     showDialog(
       context: context,
       builder: (context) => SubstitutionDialog(
         players: currentPlayers,
         teamColor: teamColor,
-        teamName: teamName,
-        onSaveSubstitutions: (updatedPlayers) {
+        teamName: teamNameForSub,
+        onSaveSubstitutions: (updatedPlayers, playersOutNames, playersInNames) {
           setState(() {
             if (selectedTeam == 1) {
               team1Players = updatedPlayers;
             } else {
               team2Players = updatedPlayers;
             }
+            gameCommentary.add(GameEvent.substitution(
+              teamName: teamNameForSub,
+              playersOutNames: playersOutNames,
+              playersInNames: playersInNames,
+            ));
           });
         },
       ),
@@ -326,30 +423,32 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
                   player.points = 0;
                   player.fouls = 0;
                   player.isOnCourt = player.isStarter;
+                  player.actionHistory.clear();
                 }
                 for (var player in team2Players) {
                   player.points = 0;
                   player.fouls = 0;
                   player.isOnCourt = player.isStarter;
+                  player.actionHistory.clear();
                 }
                 currentQuarter = 0;
 
-                // Reset quarter scores and current quarter points to initial state
                 quarterScores = {
-                  1: {}, // Will be populated when Q1 ends
+                  1: {},
                   2: {},
                   3: {},
                   4: {},
                 };
                 _currentQuarterPoints = {
-                  team1Name: 0, // Reset using actual team names
+                  team1Name: 0,
                   team2Name: 0,
                 };
-                // Ensure Q1 has an initial entry for display if needed before it ends
                 quarterScores[1] = {
                   team1Name: 0,
                   team2Name: 0,
                 };
+                gameCommentary.clear();
+                gameCommentary.add(GameEvent.gameStart());
               });
               Navigator.of(context).pop();
             },
@@ -361,18 +460,26 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
     );
   }
 
+  void _showCommentaryScreen() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => CommentaryScreen(
+          events: List.from(gameCommentary),
+          team1Name: team1Name,
+          team2Name: team2Name,
+        ),
+      ),
+    );
+  }
+
   void _showMatchSummary() {
-    // Before navigating, ensure the final quarter's score is recorded.
-    // This correctly captures the score of the quarter that was active
-    // when the "End Match" or "Match Summary" button was pressed.
-    if (currentQuarter >= 0 && currentQuarter <= 3) { // Ensure currentQuarter is a valid quarter index
-      quarterScores[currentQuarter + 1] = { // Use 1-indexed key for quarterScores
-        team1Name: _currentQuarterPoints[team1Name]!, // Use dynamic team names
-        team2Name: _currentQuarterPoints[team2Name]!, // Use dynamic team names
+    if (currentQuarter >= 0 && currentQuarter <= 3) {
+      quarterScores[currentQuarter + 1] = {
+        team1Name: _currentQuarterPoints[team1Name]!,
+        team2Name: _currentQuarterPoints[team2Name]!,
       };
     }
 
-    // Pass team names as they might have been edited
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => MatchSummaryScreen(
@@ -382,7 +489,7 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
           team2Color: getTeamColorName(team2Color),
           team1Players: team1Players,
           team2Players: team2Players,
-          quarterScores: quarterScores, // Pass the accumulated quarter scores
+          quarterScores: quarterScores,
           team1Score: team1Score,
           team2Score: team2Score,
         ),
@@ -394,25 +501,21 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
     _showMatchSummary();
   }
 
-  void _setQuarter(int newQuarterIndex) { // Renamed for clarity: newQuarterIndex is 0,1,2,3
+  void _setQuarter(int newQuarterIndex) {
     setState(() {
-      // If moving to a new quarter (and not just re-selecting the current one)
-      // And if the previous quarter was a valid one to record score for (Q1, Q2, Q3, Q4)
       if (newQuarterIndex != currentQuarter && currentQuarter >= 0 && currentQuarter <= 3) {
-        // Save points for the quarter that is now ending (currentQuarter is the 0-indexed index of the *old* quarter)
-        // Add 1 to currentQuarter to get the 1-indexed quarter number for the quarterScores map
         quarterScores[currentQuarter + 1] = {
-          team1Name: _currentQuarterPoints[team1Name]!, // Use dynamic team names
-          team2Name: _currentQuarterPoints[team2Name]!, // Use dynamic team names
+          team1Name: _currentQuarterPoints[team1Name]!,
+          team2Name: _currentQuarterPoints[team2Name]!,
         };
+        gameCommentary.add(GameEvent.quarterEnd(quarter: currentQuarter + 1));
 
-        // Reset current quarter points for the new quarter
         _currentQuarterPoints = {
           team1Name: 0,
           team2Name: 0,
         };
       }
-      currentQuarter = newQuarterIndex; // Update to the new quarter (0-indexed)
+      currentQuarter = newQuarterIndex;
     });
   }
 
@@ -426,6 +529,11 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
       appBar: AppBar(
         title: Text('Basketball Scorer'),
         actions: [
+          IconButton(
+            icon: Icon(Icons.comment),
+            onPressed: _showCommentaryScreen,
+            tooltip: 'View Commentary',
+          ),
           IconButton(
             icon: Icon(Icons.assessment),
             onPressed: _showMatchSummary,
@@ -451,7 +559,7 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
       ),
       body: Column(
         children: [
-          // Score Header
+          // Score Header - START
           Container(
             padding: EdgeInsets.symmetric(vertical: 16),
             width: double.infinity,
@@ -495,7 +603,6 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
                     Text('Quarter ${currentQuarter + 1}', style: TextStyle(color: Colors.white, fontSize: 12)),
                     Text('VS', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
                     SizedBox(height: 4),
-                    // Display current quarter's score from _currentQuarterPoints
                     Text('Q${currentQuarter + 1} Points: ${_currentQuarterPoints[team1Name] ?? 0} - ${_currentQuarterPoints[team2Name] ?? 0}',
                         style: TextStyle(color: Colors.white70, fontSize: 12)),
                   ],
@@ -529,6 +636,7 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
               ],
             ),
           ),
+          // Score Header - END
 
           // Quarter Selection
           Container(
@@ -551,12 +659,12 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
             ),
           ),
 
-          // End Match Button (appears in Q4, which is currentQuarter == 3)
+          // End Match Button (appears in Q4)
           if (currentQuarter == 3)
             Padding(
               padding: EdgeInsets.all(8.0),
               child: ElevatedButton(
-                onPressed: _endMatch, // Calls _showMatchSummary
+                onPressed: _endMatch,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.orange,
                   foregroundColor: Colors.white,
@@ -668,9 +776,20 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              GestureDetector(
-                                onTap: () => _editPlayerName(player),
-                                child: Text(player.name, style: TextStyle(fontWeight: FontWeight.bold)),
+                              Row(
+                                children: [
+                                  GestureDetector(
+                                    onTap: () => _editPlayerName(player),
+                                    child: Text(player.name, style: TextStyle(fontWeight: FontWeight.bold)),
+                                  ),
+                                  if (player.actionHistory.isNotEmpty)
+                                    IconButton(
+                                      icon: Icon(Icons.undo, size: 18, color: Colors.grey[600]),
+                                      onPressed: () => _undoLastAction(player),
+                                      tooltip: 'Undo Last Action',
+                                      visualDensity: VisualDensity.compact,
+                                    ),
+                                ],
                               ),
                               SizedBox(height: 4),
                               Text('Points: ${player.points} | Fouls: ${player.fouls}'),
@@ -683,6 +802,7 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
                                     child: Text('1pt'),
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: Colors.grey.withOpacity(0.3),
+                                      foregroundColor: Colors.black, // Ensure text color is set
                                       elevation: 0,
                                     ),
                                   ),
@@ -691,6 +811,7 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
                                     child: Text('2pt'),
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: Colors.grey.withOpacity(0.3),
+                                      foregroundColor: Colors.black,
                                       elevation: 0,
                                     ),
                                   ),
@@ -699,6 +820,7 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
                                     child: Text('3pt'),
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: Colors.grey.withOpacity(0.3),
+                                      foregroundColor: Colors.black,
                                       elevation: 0,
                                     ),
                                   ),
@@ -707,6 +829,7 @@ class _BasketballScoreScreenState extends State<BasketballScoreScreen> {
                                     child: Text('Foul'),
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: Colors.grey.withOpacity(0.3),
+                                      foregroundColor: Colors.black,
                                       elevation: 0,
                                     ),
                                   ),

@@ -1,36 +1,35 @@
-// lib/SubstitutionDialog.dart
+// lib/substitution_dialog.dart
 import 'package:flutter/material.dart';
-import 'models.dart';
+import 'models.dart'; // Import your shared models
 
 class SubstitutionDialog extends StatefulWidget {
   final List<Player> players; // All players for the selected team
-  final Function(List<Player>) onSaveSubstitutions; // Callback to save changes
+  // NEW: onSaveSubstitutions callback now returns the names of players substituted
+  final Function(List<Player> updatedPlayers, List<String> playersOutNames, List<String> playersInNames) onSaveSubstitutions;
   final Color teamColor;
   final String teamName;
 
   SubstitutionDialog({
+    Key? key, // Add Key
     required this.players,
     required this.onSaveSubstitutions,
     required this.teamColor,
     required this.teamName,
-  });
+  }) : super(key: key); // Pass key to super
 
   @override
   _SubstitutionDialogState createState() => _SubstitutionDialogState();
 }
 
 class _SubstitutionDialogState extends State<SubstitutionDialog> {
-  // Use lists to store indices instead of player objects
-  List<int> selectedPlayersOutIndices = [];
-  List<int> selectedPlayersInIndices = [];
+  Set<Player> selectedPlayersOut = {};
+  Set<Player> selectedPlayersIn = {};
 
-  // Create a working copy of players to modify within the dialog
   late List<Player> dialogPlayers;
 
   @override
   void initState() {
     super.initState();
-    // Create deep copies to avoid modifying the original list directly
     dialogPlayers = widget.players.map((player) => player.copyWith()).toList();
   }
 
@@ -39,7 +38,6 @@ class _SubstitutionDialogState extends State<SubstitutionDialog> {
     List<Player> playersOnCourt = dialogPlayers.where((p) => p.isOnCourt).toList();
     List<Player> playersOnBench = dialogPlayers.where((p) => !p.isOnCourt).toList();
 
-    // Sort players by jersey number for better readability
     playersOnCourt.sort((a, b) => a.jerseyNumber.compareTo(b.jerseyNumber));
     playersOnBench.sort((a, b) => a.jerseyNumber.compareTo(b.jerseyNumber));
 
@@ -50,7 +48,6 @@ class _SubstitutionDialogState extends State<SubstitutionDialog> {
         height: MediaQuery.of(context).size.height * 0.7,
         child: Column(
           children: [
-            // Players Coming Out Section
             Text(
               'Players to Sub Out (On Court):',
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: widget.teamColor),
@@ -61,20 +58,17 @@ class _SubstitutionDialogState extends State<SubstitutionDialog> {
                 itemCount: playersOnCourt.length,
                 itemBuilder: (context, index) {
                   final player = playersOnCourt[index];
-                  final playerIndex = dialogPlayers.indexWhere((p) =>
-                  p.jerseyNumber == player.jerseyNumber && p.teamId == player.teamId);
-
                   return CheckboxListTile(
                     title: Text('${player.name} (#${player.jerseyNumber})'),
                     subtitle: Text('Points: ${player.points} | Fouls: ${player.fouls}'),
-                    value: selectedPlayersOutIndices.contains(playerIndex),
+                    value: selectedPlayersOut.contains(player),
                     activeColor: widget.teamColor,
                     onChanged: (bool? value) {
                       setState(() {
                         if (value == true) {
-                          selectedPlayersOutIndices.add(playerIndex);
+                          selectedPlayersOut.add(player);
                         } else {
-                          selectedPlayersOutIndices.remove(playerIndex);
+                          selectedPlayersOut.remove(player);
                         }
                       });
                     },
@@ -85,7 +79,6 @@ class _SubstitutionDialogState extends State<SubstitutionDialog> {
 
             Divider(thickness: 2, height: 24),
 
-            // Players Coming In Section
             Text(
               'Players to Sub In (On Bench):',
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: widget.teamColor),
@@ -96,20 +89,17 @@ class _SubstitutionDialogState extends State<SubstitutionDialog> {
                 itemCount: playersOnBench.length,
                 itemBuilder: (context, index) {
                   final player = playersOnBench[index];
-                  final playerIndex = dialogPlayers.indexWhere((p) =>
-                  p.jerseyNumber == player.jerseyNumber && p.teamId == player.teamId);
-
                   return CheckboxListTile(
                     title: Text('${player.name} (#${player.jerseyNumber})'),
                     subtitle: Text('Points: ${player.points} | Fouls: ${player.fouls}'),
-                    value: selectedPlayersInIndices.contains(playerIndex),
+                    value: selectedPlayersIn.contains(player),
                     activeColor: widget.teamColor,
                     onChanged: (bool? value) {
                       setState(() {
                         if (value == true) {
-                          selectedPlayersInIndices.add(playerIndex);
+                          selectedPlayersIn.add(player);
                         } else {
-                          selectedPlayersInIndices.remove(playerIndex);
+                          selectedPlayersIn.remove(player);
                         }
                       });
                     },
@@ -127,8 +117,7 @@ class _SubstitutionDialogState extends State<SubstitutionDialog> {
         ),
         ElevatedButton(
           onPressed: () {
-            // Check if the number of players to sub out matches players to sub in
-            if (selectedPlayersOutIndices.length != selectedPlayersInIndices.length) {
+            if (selectedPlayersOut.length != selectedPlayersIn.length) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Text('Please select an equal number of players to sub in and out.'),
@@ -138,16 +127,21 @@ class _SubstitutionDialogState extends State<SubstitutionDialog> {
               return;
             }
 
-            // Apply substitutions using indices
-            for (var index in selectedPlayersOutIndices) {
-              dialogPlayers[index].isOnCourt = false;
+            // Apply substitutions to the dialogPlayers list
+            for (var playerOut in selectedPlayersOut) {
+              final originalPlayerInDialogList = dialogPlayers.firstWhere((p) => p == playerOut);
+              originalPlayerInDialogList.isOnCourt = false;
             }
-            for (var index in selectedPlayersInIndices) {
-              dialogPlayers[index].isOnCourt = true;
+            for (var playerIn in selectedPlayersIn) {
+              final originalPlayerInDialogList = dialogPlayers.firstWhere((p) => p == playerIn);
+              originalPlayerInDialogList.isOnCourt = true;
             }
 
-            // Pass the updated list back to the parent widget
-            widget.onSaveSubstitutions(dialogPlayers);
+            // NEW: Get names of players for commentary before passing them back
+            final List<String> namesOut = selectedPlayersOut.map((p) => p.name).toList();
+            final List<String> namesIn = selectedPlayersIn.map((p) => p.name).toList();
+
+            widget.onSaveSubstitutions(dialogPlayers, namesOut, namesIn); // Pass names back
             Navigator.of(context).pop();
           },
           style: ElevatedButton.styleFrom(
