@@ -45,11 +45,10 @@ app.*.map.json
 /android/app/release
 
 .metadata
-analysis_options.yaml
+analysis_options.yamlZ
 pubspec.yaml
 pubspec.lock
 
-windows
 web
 test
 macos
